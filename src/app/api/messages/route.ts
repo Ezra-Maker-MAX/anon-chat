@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
-import { messages, accounts } from "@/lib/schema";
+import { messages, accounts, rooms } from "@/lib/schema";
 import { getSession } from "@/lib/auth";
 import { stripLinks } from "@/lib/sanitize";
 import { roomAccess } from "@/lib/access";
@@ -78,9 +78,18 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "无权向该房间发消息" }, { status: 403 });
   }
 
+  // 检查房间是否端到端加密：加密房的消息 body 是客户端密文，不净化、不截断
+  const room = await db
+    .select({ encrypted: rooms.encrypted })
+    .from(rooms)
+    .where(eq(rooms.id, roomId))
+    .get();
+  const isEncrypted = !!room?.encrypted;
+
   // 文本消息必须净化：剥离一切超链接。媒体消息的 body 为系统生成的 Blob URL。
+  // 加密房的 body 是密文，跳过净化（服务端无法也无需理解密文内容）。
   let finalBody = body;
-  if (kind === "text") {
+  if (kind === "text" && !isEncrypted) {
     finalBody = stripLinks(body);
     if (!finalBody) {
       return NextResponse.json(
@@ -90,7 +99,7 @@ export async function POST(req: NextRequest) {
     }
     finalBody = finalBody.slice(0, 4000);
   } else {
-    finalBody = body.slice(0, 2000);
+    finalBody = body.slice(0, 6000); // 加密密文更长，放宽上限
   }
 
   // 阅后即焚：设定到期时间；服务端会在到期后删除该记录。

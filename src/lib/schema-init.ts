@@ -32,7 +32,8 @@ const STATEMENTS = [
     topic TEXT,
     created_by TEXT,
     created_at INTEGER NOT NULL,
-    is_public INTEGER NOT NULL DEFAULT 1
+    is_public INTEGER NOT NULL DEFAULT 1,
+    encrypted INTEGER NOT NULL DEFAULT 0
   )`,
   `CREATE TABLE IF NOT EXISTS room_members (
     room_id TEXT NOT NULL,
@@ -61,6 +62,7 @@ const STATEMENTS = [
   )`,
   `CREATE INDEX IF NOT EXISTS idx_messages_room_seq ON messages (room_id, seq)`,
   `CREATE INDEX IF NOT EXISTS idx_messages_burns_at ON messages (burns_at)`,
+  // 迁移：为旧库补 encrypted 列（ALTER TABLE ADD COLUMN 是幂等的——列已存在时会报错，用 try/catch 忽略）
 ];
 
 let initPromise: Promise<void> | null = null;
@@ -70,6 +72,14 @@ export function ensureSchema(): Promise<void> {
   initPromise = (async () => {
     for (const stmt of STATEMENTS) {
       await db.$client.execute(stmt);
+    }
+    // 迁移：为旧库补 encrypted 列（列已存在时 SQLite 报错，安全忽略）
+    try {
+      await db.$client.execute(
+        "ALTER TABLE rooms ADD COLUMN encrypted INTEGER NOT NULL DEFAULT 0"
+      );
+    } catch {
+      /* 列已存在，忽略 */
     }
     // 默认公开房间 "广场"
     const existing = await db

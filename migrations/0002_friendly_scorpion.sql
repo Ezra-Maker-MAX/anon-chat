@@ -1,0 +1,1 @@
+ALTER TABLE `rooms` ADD `encrypted` integer DEFAULT false NOT NULL;

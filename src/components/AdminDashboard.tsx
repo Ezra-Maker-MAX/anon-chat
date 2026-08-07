@@ -22,6 +22,14 @@ export default function AdminDashboard() {
   const [genResult, setGenResult] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
 
+  // 消息检索
+  const [searchQ, setSearchQ] = useState("");
+  const [searchHandle, setSearchHandle] = useState("");
+  const [searchRoom, setSearchRoom] = useState("");
+  const [searchKind, setSearchKind] = useState("");
+  const [searchResults, setSearchResults] = useState<any[] | null>(null);
+  const [searching, setSearching] = useState(false);
+
   const checkAdmin = useCallback(async () => {
     const r = await fetch("/api/admin/me");
     const d = await r.json();
@@ -98,6 +106,27 @@ export default function AdminDashboard() {
       method: "DELETE",
     });
     loadAll();
+  }
+
+  async function doSearch() {
+    setSearching(true);
+    const params = new URLSearchParams();
+    if (searchQ) params.set("q", searchQ);
+    if (searchHandle) params.set("handle", searchHandle);
+    if (searchRoom) params.set("room", searchRoom);
+    if (searchKind) params.set("kind", searchKind);
+    const r = await fetch(`/api/admin/messages/search?${params}`);
+    const d = await r.json();
+    setSearchResults(d.messages || []);
+    setSearching(false);
+  }
+
+  function clearSearch() {
+    setSearchQ("");
+    setSearchHandle("");
+    setSearchRoom("");
+    setSearchKind("");
+    setSearchResults(null);
   }
 
   if (admin === null) return <div className="admin-loading">检查权限中…</div>;
@@ -219,7 +248,54 @@ export default function AdminDashboard() {
       </section>
 
       <section className="panel">
-        <h3>最近消息（100 条）</h3>
+        <h3>消息检索</h3>
+        <div className="search-bar">
+          <input
+            type="text"
+            placeholder="关键词（消息内容）"
+            value={searchQ}
+            onChange={(e) => setSearchQ(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && doSearch()}
+          />
+          <input
+            type="text"
+            placeholder="发送者昵称"
+            value={searchHandle}
+            onChange={(e) => setSearchHandle(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && doSearch()}
+          />
+          <input
+            type="text"
+            placeholder="房间名"
+            value={searchRoom}
+            onChange={(e) => setSearchRoom(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && doSearch()}
+          />
+          <select value={searchKind} onChange={(e) => setSearchKind(e.target.value)}>
+            <option value="">全部类型</option>
+            <option value="text">文本</option>
+            <option value="image">图片</option>
+            <option value="voice">语音</option>
+            <option value="video">视频</option>
+          </select>
+          <button className="btn primary" onClick={doSearch} disabled={searching}>
+            {searching ? "搜索中…" : "搜索"}
+          </button>
+          {searchResults && (
+            <button className="btn ghost" onClick={clearSearch}>
+              清除
+            </button>
+          )}
+        </div>
+        {searchResults && (
+          <p className="muted" style={{ marginTop: 8 }}>
+            找到 {searchResults.length} 条匹配消息
+          </p>
+        )}
+      </section>
+
+      <section className="panel">
+        <h3>{searchResults ? "搜索结果" : "最近消息（100 条）"}</h3>
         <table className="admin-table">
           <thead>
             <tr>
@@ -232,13 +308,15 @@ export default function AdminDashboard() {
             </tr>
           </thead>
           <tbody>
-            {messages.map((m) => (
+            {(searchResults || messages).map((m) => (
               <tr key={m.seq}>
-                <td>{m.room_name}</td>
+                <td>{m.room_name}{m.room_encrypted ? " 🔐" : ""}</td>
                 <td>{m.handle || "匿名"}</td>
                 <td>{m.kind}</td>
                 <td className="msg-cell">
-                  {m.kind === "text" ? m.body : `📎 ${m.kind}`}
+                  {m.kind === "text"
+                    ? (m.room_encrypted ? "🔒 [加密内容]" : m.body)
+                    : `📎 ${m.kind}`}
                 </td>
                 <td>{fmt(m.created_at)}</td>
                 <td>

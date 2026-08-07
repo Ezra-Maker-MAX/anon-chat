@@ -670,6 +670,29 @@ body > div {
   text-overflow: ellipsis;
 }
 
+.search-bar {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.search-bar input,
+.search-bar select {
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 13px;
+  font-family: var(--font-body);
+  min-width: 120px;
+}
+.search-bar input:focus,
+.search-bar select:focus {
+  border-color: var(--ember);
+  outline: none;
+}
+
 /* ---------------- 焦点可见性（可访问性） ---------------- */
 a:focus-visible,
 button:focus-visible,

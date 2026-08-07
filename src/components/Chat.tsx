@@ -1,6 +1,17 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  generateRoomKey,
+  encryptText,
+  decryptText,
+  encryptBlob,
+  decryptBlob,
+  parseInviteCode,
+  buildInviteCode,
+  saveRoomKey,
+  getRoomKey,
+} from "@/lib/crypto";
 
 type Room = {
   id: string;
@@ -9,6 +20,7 @@ type Room = {
   createdBy: string;
   createdAt: string;
   isPublic: boolean;
+  encrypted: boolean;
 };
 
 type Message = {
@@ -59,6 +71,7 @@ export default function Chat() {
   const [createOpen, setCreateOpen] = useState(false);
   const [newName, setNewName] = useState("");
   const [newPrivate, setNewPrivate] = useState(false);
+  const [newEncrypted, setNewEncrypted] = useState(false);
   const [createdInvite, setCreatedInvite] = useState<string | null>(null);
   const [createErr, setCreateErr] = useState("");
 
@@ -77,6 +90,10 @@ export default function Chat() {
   const listEndRef = useRef<HTMLDivElement | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
   const pendingKind = useRef<"image" | "voice" | "video">("image");
+
+  // 解密后的消息内容缓存：{ [msgId]: { text?: string, mediaUrl?: string } }
+  const [decrypted, setDecrypted] = useState<Record<string, { text?: string; mediaUrl?: string }>>({});
+  const objUrlsRef = useRef<string[]>([]);
 
   /* ---------- 账号持久化 ---------- */
   const loadAccounts = useCallback(() => {
@@ -186,6 +203,53 @@ export default function Chat() {
     return () => clearInterval(t);
   }, []);
 
+  /* ---------- 端到端解密 ---------- */
+  useEffect(() => {
+    const ar = rooms.find((r) => r.id === activeRoom);
+    if (!ar?.encrypted) {
+      setDecrypted({});
+      return;
+    }
+    const key = getRoomKey(activeRoom);
+    if (!key) {
+      setDecrypted({});
+      return;
+    }
+    let cancelled = false;
+    const newUrls: string[] = [];
+    (async () => {
+      const out: Record<string, { text?: string; mediaUrl?: string }> = {};
+      for (const m of msgs) {
+        if (cancelled) return;
+        try {
+          if (m.kind === "text") {
+            out[m.id] = { text: await decryptText(m.body, key) };
+          } else {
+            // 媒体：先解密 URL，再 fetch 加密文件，解密文件，生成 object URL
+            const url = await decryptText(m.body, key);
+            const resp = await fetch(url);
+            const encBuf = await resp.arrayBuffer();
+            const mime =
+              m.kind === "image" ? "image/png" : m.kind === "voice" ? "audio/webm" : "video/webm";
+            const decBlob = await decryptBlob(encBuf, key, mime);
+            const objUrl = URL.createObjectURL(decBlob);
+            newUrls.push(objUrl);
+            out[m.id] = { mediaUrl: objUrl };
+          }
+        } catch {
+          out[m.id] = { text: "🔒 解密失败" };
+        }
+      }
+      if (!cancelled) setDecrypted(out);
+    })();
+    return () => {
+      cancelled = true;
+      // 清理 object URLs
+      newUrls.forEach((u) => URL.revokeObjectURL(u));
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeRoom, msgs, rooms]);
+
   useEffect(() => {
     listEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [msgs]);
@@ -195,10 +259,25 @@ export default function Chat() {
     const body = text.trim();
     if (!body || !activeRoom) return;
     setText("");
+    const ar = rooms.find((r) => r.id === activeRoom);
+    let payload: string = body;
+    if (ar?.encrypted) {
+      const key = getRoomKey(activeRoom);
+      if (!key) {
+        alert("缺少加密密钥，无法发送。请重新用邀请码加入该房间。");
+        return;
+      }
+      try {
+        payload = await encryptText(body, key);
+      } catch {
+        alert("加密失败");
+        return;
+      }
+    }
     await fetch("/api/messages", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ roomId: activeRoom, kind: "text", body, burn: burnOn }),
+      body: JSON.stringify({ roomId: activeRoom, kind: "text", body: payload, burn: burnOn }),
     });
   }
 
@@ -235,18 +314,28 @@ export default function Chat() {
         setRec(null);
         setUploading(true);
         try {
+          const ar = rooms.find((r) => r.id === activeRoom);
+          const roomKey = ar?.encrypted ? getRoomKey(activeRoom) : null;
+          let uploadFile: File | Blob = file;
+          if (ar?.encrypted && roomKey) {
+            uploadFile = await encryptBlob(file, roomKey);
+          }
           const fd = new FormData();
-          fd.append("file", file);
+          fd.append("file", uploadFile, `rec.${ext}`);
           const res = await fetch("/api/upload", { method: "POST", body: fd });
           if (!res.ok) throw new Error("上传失败 " + res.status);
           const { url } = await res.json();
+          let msgBody = url;
+          if (ar?.encrypted && roomKey) {
+            msgBody = await encryptText(url, roomKey);
+          }
           await fetch("/api/messages", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               roomId: activeRoom,
               kind,
-              body: url,
+              body: msgBody,
               burn: burnOn,
             }),
           });
@@ -284,15 +373,25 @@ export default function Chat() {
     const kind = pendingKind.current;
     setUploading(true);
     try {
+      const ar = rooms.find((r) => r.id === activeRoom);
+      const roomKey = ar?.encrypted ? getRoomKey(activeRoom) : null;
+      let uploadFile: File | Blob = file;
+      if (ar?.encrypted && roomKey) {
+        uploadFile = await encryptBlob(file, roomKey);
+      }
       const fd = new FormData();
-      fd.append("file", file);
+      fd.append("file", uploadFile, file.name);
       const res = await fetch("/api/upload", { method: "POST", body: fd });
       if (!res.ok) throw new Error("upload failed " + res.status);
       const { url } = await res.json();
+      let msgBody = url;
+      if (ar?.encrypted && roomKey) {
+        msgBody = await encryptText(url, roomKey);
+      }
       await fetch("/api/messages", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ roomId: activeRoom, kind, body: url, burn: burnOn }),
+        body: JSON.stringify({ roomId: activeRoom, kind, body: msgBody, burn: burnOn }),
       });
     } catch (err) {
       alert("上传失败：" + (err as Error).message);
@@ -355,36 +454,55 @@ export default function Chat() {
       setCreateErr("房间名必填");
       return;
     }
+    const wantEncrypted = newPrivate && newEncrypted;
+    let roomKey: string | null = null;
+    if (wantEncrypted) {
+      try {
+        roomKey = await generateRoomKey();
+      } catch {
+        setCreateErr("浏览器不支持 Web Crypto API，无法创建加密房");
+        return;
+      }
+    }
     const res = await fetch("/api/rooms", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: newName, isPrivate: newPrivate }),
+      body: JSON.stringify({ name: newName, isPrivate: newPrivate, encrypted: wantEncrypted }),
     });
     const data = await res.json();
     if (!res.ok) {
       setCreateErr(data.error || "创建失败");
       return;
     }
+    // 加密房：把密钥拼进邀请码片段，存到本地
+    if (wantEncrypted && roomKey && data.inviteCode) {
+      saveRoomKey(data.id, roomKey);
+      data.inviteCode = buildInviteCode(data.inviteCode, roomKey);
+    }
     setCreateOpen(false);
     setNewName("");
+    setNewEncrypted(false);
     await loadRooms();
     setActiveRoom(data.id);
     if (data.inviteCode) setCreatedInvite(data.inviteCode);
   }
 
   async function joinPrivate() {
-    const code = window.prompt("输入私密房邀请码");
-    if (!code) return;
+    const raw = window.prompt("输入私密房邀请码");
+    if (!raw) return;
+    const { serverCode, key } = parseInviteCode(raw);
     const res = await fetch("/api/rooms/join", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ code }),
+      body: JSON.stringify({ code: serverCode }),
     });
     const data = await res.json();
     if (!res.ok) {
       alert(data.error || "加入失败");
       return;
     }
+    // 如果邀请码携带了密钥，存到本地
+    if (key) saveRoomKey(data.roomId, key);
     await loadRooms();
     setActiveRoom(data.roomId);
   }
@@ -398,6 +516,23 @@ export default function Chat() {
 
   /* ---------- 渲染 ---------- */
   function renderBody(m: Message) {
+    const ar = rooms.find((r) => r.id === activeRoom);
+    const isEnc = ar?.encrypted;
+    const dec = decrypted[m.id];
+
+    // 加密房：优先用解密后的内容
+    if (isEnc) {
+      if (!dec) return <div className="msg-bubble muted">🔒 解密中…</div>;
+      if (m.kind === "image" && dec.mediaUrl)
+        return <img className="msg-media" src={dec.mediaUrl} alt="图片" />;
+      if (m.kind === "voice" && dec.mediaUrl)
+        return <audio className="msg-media audio" src={dec.mediaUrl} controls preload="none" />;
+      if (m.kind === "video" && dec.mediaUrl)
+        return <video className="msg-media" src={dec.mediaUrl} controls preload="none" style={{ maxWidth: 260 }} />;
+      return <div className="msg-bubble">{dec.text || "🔒 无法解密"}</div>;
+    }
+
+    // 非加密房：直接用明文
     if (m.kind === "image")
       return (
         // eslint-disable-next-line @next/next/no-img-element
@@ -475,7 +610,9 @@ export default function Chat() {
                 className={"room-tab" + (r.id === activeRoom ? " active" : "")}
                 onClick={() => setActiveRoom(r.id)}
               >
-                {!r.isPublic && "🔒 "} {r.name}
+                {!r.isPublic && "🔒 "}
+                {r.encrypted && "🔐 "}
+                {r.name}
               </button>
             ))}
             <button
@@ -621,10 +758,23 @@ export default function Chat() {
               <input
                 type="checkbox"
                 checked={newPrivate}
-                onChange={(e) => setNewPrivate(e.target.checked)}
+                onChange={(e) => {
+                  setNewPrivate(e.target.checked);
+                  if (!e.target.checked) setNewEncrypted(false);
+                }}
               />
               设为私密房（需邀请码加入）
             </label>
+            {newPrivate && (
+              <label className="check">
+                <input
+                  type="checkbox"
+                  checked={newEncrypted}
+                  onChange={(e) => setNewEncrypted(e.target.checked)}
+                />
+                🔒 端到端加密（消息内容服务端无法读取，密钥随邀请码传递）
+              </label>
+            )}
             <div className="row">
               <button className="btn ghost" onClick={() => setCreateOpen(false)}>
                 取消
@@ -642,7 +792,11 @@ export default function Chat() {
         <div className="overlay" onClick={() => setCreatedInvite(null)}>
           <div className="card" onClick={(e) => e.stopPropagation()}>
             <h2>私密房已创建</h2>
-            <p className="sub">把邀请码告诉想邀请的人（凭码在「🔑」处加入）。可多次使用。</p>
+            <p className="sub">
+              {createdInvite.includes("#")
+                ? "🔒 这是端到端加密房。邀请码包含解密密钥，必须完整分享（含 # 后部分），否则对方无法解密消息。"
+                : "把邀请码告诉想邀请的人（凭码在「🔑」处加入）。可多次使用。"}
+            </p>
             <div className="invite-code">{createdInvite}</div>
             <div className="row">
               <button

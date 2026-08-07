@@ -34,24 +34,28 @@ export async function GET() {
 /**
  * 创建房间。isPrivate=true 时为私密房：创建者自动成为成员，并生成一张
  * 可多次使用（默认 20 次）的邀请码返回给创建者用于邀请他人。
+ * encrypted=true（仅私密房可用）时标记为端到端加密房；加密由客户端完成，
+ * 服务端只存密文，密钥通过邀请码片段传递。
  */
 export async function POST(req: NextRequest) {
   const s = await getSession();
   if (!s) return NextResponse.json({ error: "未登录" }, { status: 401 });
 
-  const { name, topic, isPrivate } = await req.json().catch(() => ({}));
+  const { name, topic, isPrivate, encrypted } = await req.json().catch(() => ({}));
   if (!name || typeof name !== "string" || !name.trim()) {
     return NextResponse.json({ error: "房间名必填" }, { status: 400 });
   }
 
   const id = crypto.randomUUID();
   const isPrv = !!isPrivate;
+  const isEnc = isPrv && !!encrypted; // 仅私密房可开启加密
   await db.insert(rooms).values({
     id,
     name: name.trim().slice(0, 40),
     topic: topic ? String(topic).slice(0, 200) : "",
     createdBy: s.id,
     isPublic: !isPrv,
+    encrypted: isEnc,
   });
 
   let inviteCode: string | undefined;
@@ -69,5 +73,5 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  return NextResponse.json({ id, name: name.trim(), inviteCode });
+  return NextResponse.json({ id, name: name.trim(), inviteCode, encrypted: isEnc });
 }

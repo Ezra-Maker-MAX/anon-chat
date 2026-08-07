@@ -52,6 +52,11 @@ export const rooms = sqliteTable("rooms", {
     .notNull()
     .defaultNow(),
   isPublic: integer("is_public", { mode: "boolean" }).notNull().default(true),
+  /**
+   * 端到端加密标记。仅私密房可开启；开启后消息 body 存的是客户端
+   * AES-GCM 密文，服务端无法解密内容。房间密钥通过邀请码片段传递。
+   */
+  encrypted: integer("encrypted", { mode: "boolean" }).notNull().default(false),
 });
 
 /** 私密房成员关系（复合主键）。 */
