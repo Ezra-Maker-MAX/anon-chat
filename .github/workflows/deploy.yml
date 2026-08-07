@@ -1,0 +1,96 @@
+# 一键部署到 Vercel
+# 推送到 master → 自动构建 + 部署生产环境
+# 提交 PR → 自动构建 + 部署预览环境
+#
+# 需要在 GitHub 仓库 Settings → Secrets and variables → Actions 中配置以下 Secrets：
+#   VERCEL_TOKEN     — Vercel Access Token (https://vercel.com/account/tokens)
+#   VERCEL_ORG_ID    — Vercel 团队/个人 ID (vercel.com/dashboard → Settings → General)
+#   VERCEL_PROJECT_ID — Vercel 项目 ID (首次手动导入后从项目 Settings 获取，或用 vercel link)
+#
+# 首次使用：
+#   1. 在 vercel.com/new 导入 GitHub 仓库 Ezra-Maker-MAX/anon-chat
+#   2. 配好 5 个环境变量 (TURSO_URL / TURSO_AUTH_TOKEN / AUTH_SECRET / BLOB_READ_WRITE_TOKEN / ADMIN_CODE)
+#   3. 从 Vercel 项目 Settings → General 复制 Org ID 和 Project ID
+#   4. 在 GitHub 仓库 Secrets 添加上述 3 个值
+#   5. 之后每次 git push master 即自动部署
+
+name: Deploy to Vercel
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+env:
+  NODE_VERSION: "20"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      - name: Build
+        run: npm run build
+        env:
+          # 构建时不需要真实密钥；ensureSchema 只在运行时调用
+          AUTH_SECRET: build-placeholder
+
+      - name: Install Vercel CLI
+        run: npm install -g vercel@latest
+
+      - name: Pull Vercel environment (preview)
+        if: github.event_name == 'pull_request'
+        run: vercel pull --yes --environment=preview --token=${{ secrets.VERCEL_TOKEN }} --cwd .
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+
+      - name: Pull Vercel environment (production)
+        if: github.event_name == 'push'
+        run: vercel pull --yes --environment=production --token=${{ secrets.VERCEL_TOKEN }} --cwd .
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+
+      - name: Build for Vercel (preview)
+        if: github.event_name == 'pull_request'
+        run: vercel build --yes --token=${{ secrets.VERCEL_TOKEN }} --cwd .
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+
+      - name: Build for Vercel (production)
+        if: github.event_name == 'push'
+        run: vercel build --prod --yes --token=${{ secrets.VERCEL_TOKEN }} --cwd .
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+
+      - name: Deploy to Vercel (preview)
+        if: github.event_name == 'pull_request'
+        run: vercel deploy --prebuilt --yes --token=${{ secrets.VERCEL_TOKEN }} --cwd .
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+
+      - name: Deploy to Vercel (production)
+        if: github.event_name == 'push'
+        run: vercel deploy --prebuilt --prod --yes --token=${{ secrets.VERCEL_TOKEN }} --cwd .
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
